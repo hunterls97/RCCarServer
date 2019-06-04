@@ -1,0 +1,26 @@
+<link rel="stylesheet" href="/controller.css">
+
+<body>
+	<div class="control-window">
+		<button id="forward">Forward</button>
+		<button id="reverse">Reverse</button>
+		<button id="left">Left</button>
+		<button id="right">Right</button>
+	</div>
+	<br/>
+	<div class="pwm-adjust">
+		Steer Power: <input id="sp" type="number" min="0" max="1"/><br/>
+		Drive Power: <input id="dp" type="number" min="0" max="1"/><br/>
+	</div>
+
+	<br/>
+
+	<div class="car-selector">
+
+	</div>
+</body>
+
+<script src="/jquery.min.js"></script>
+<script src="/socket.io.js"></script>
+<script src="/socket.io.js.map"></script>
+<script src="/controller.js"></script>
