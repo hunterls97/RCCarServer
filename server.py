@@ -1,17 +1,21 @@
 import os
+import io
 from flask import Flask
 from flask import send_from_directory
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO, Namespace, emit
 
 app = Flask(__name__)
 socketio = SocketIO(app)
 static_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'public')
-#logger = logging.getLogger('logger')
-#logger.setLevel(logging.ERROR)
 
 @app.route('/')
 def serve():
 	return send_from_directory(static_dir, 'index.html')
+
+@app.route('/camera')
+def view_camera():
+	return send_from_directory(static_dir, 'camera.html')
+
 
 @app.route('/<path:path>', methods=['GET'])
 def serve_in_path(path):
@@ -20,51 +24,43 @@ def serve_in_path(path):
 
 	return send_from_directory(static_dir, path)
 
-@socketio.on('connect')
-def connection():
-	print('connected!')
+class ControllerNameSpace(Namespace):
+	def on_connect(self):
+		print('connected!')
+		pass
 
-#global control commands
-@socketio.on('sp')
-def set_steer_power(data):
-	socketio.emit('sp', data)
+	#global control commands
+	def on_sp(self, data):
+		emit('sp', data, broadcast=True)
 
-@socketio.on('dp')
-def set_drive_power(data):
-	socketio.emit('dp', data)
+	def on_dp(self, data):
+		emit('dp', data, broadcast=True)
 
-@socketio.on('a1')
-def accelerate():
-	socketio.emit('a1')
+	def on_a1(self):
+		print('accel')
+		emit('a1', broadcast=True)
 
-@socketio.on('tl1')
-def turn_left():
-	socketio.emit('tl1')
+	def on_tl1(self):
+		emit('tl1', broadcast=True)
 
-@socketio.on('r1')
-def reverse():
-	socketio.emit('r1')
+	def on_r1(self):
+		emit('r1', broadcast=True)
 
-@socketio.on('tr1')
-def turn_right():
-	socketio.emit('tr1')
+	def on_tr1(self):
+		emit('tr1', broadcast=True)
 
-@socketio.on('a0')
-def stop_accelerate():
-	socketio.emit('a0')
+	def on_a0(self):
+		emit('a0', broadcast=True)
 
-@socketio.on('tl0')
-def stop_turn_left():
-	socketio.emit('tl0')
+	def on_tl0(self):
+		emit('tl0', broadcast=True)
 
-@socketio.on('r0')
-def stop_reverse():
-	socketio.emit('r0')
+	def on_r0(self):
+		emit('r0', broadcast=True)
 
-@socketio.on('tr0')
-def stop_turn_right():
-	socketio.emit('tr0')
+	def on_tr0(self):
+		emit('tr0', broadcast=True)
 
-
+socketio.on_namespace(ControllerNameSpace('/controller'))
 if __name__ == "__main__":
 	socketio.run(app, log_output=False, host='192.168.2.13', port=27372)
