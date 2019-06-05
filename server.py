@@ -24,6 +24,14 @@ def serve_in_path(path):
 
 	return send_from_directory(static_dir, path)
 
+class CameraNameSpace(Namespace):
+	def on_connect(self):
+		print('rpi camera connected')
+		pass
+
+	def on_camera_data(self, data):
+		print(data)
+
 class ControllerNameSpace(Namespace):
 	def on_connect(self):
 		print('connected!')
@@ -62,5 +70,6 @@ class ControllerNameSpace(Namespace):
 		emit('tr0', broadcast=True)
 
 socketio.on_namespace(ControllerNameSpace('/controller'))
+socketio.on_namespace(CameraNameSpace('/camera'))
 if __name__ == "__main__":
 	socketio.run(app, log_output=False, host='192.168.2.13', port=27372)

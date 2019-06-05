@@ -1,2 +1,3 @@
 /venv/
-/public/socket.*
+/public/socket.io.js
+/public/socket.io.js.map

@@ -1,3 +1,7 @@
+import io
+import time
+import threading
+import picamera
 import socketio
 import RPi.GPIO as GPIO
 
@@ -6,7 +10,7 @@ sio = socketio.Client(
 	reconnection_attempts = 10,
 	reconnection_delay = 6
 )
-sio.connect('http://192.168.2.13:27372', namespaces=['/controller'])
+sio.connect('http://192.168.2.13:27372', namespaces=['/controller', '/camera'])
 
 def stop():
 	GPIO.output(11, GPIO.LOW)
@@ -77,7 +81,35 @@ class ControllerNameSpace(socketio.ClientNamespace):
 	def on_tr0(self, data):
 		turn(-1)
 
-sio.register_namespace(ControllerNameSpace('/controller'))
+class CameraNameSpace(socketio.ClientNamespace):
+	def on_connect(self):
+		print('connected to pi camera')
+		
+		while True:
+			with output.condition:
+				output.condition.wait()
+				frame = output.frame
+
+			self.emit('camera_data', frame)
+
+class StreamingOutput(object):
+	def __init__(self):
+		self.frame = None
+		self.buffer = io.BytesIO()
+		self.condition = threading.Condition()
+
+	def write(self, buf):
+		if buf.startswith(b'\xff\xd8'):
+			self.buffer.truncate()
+
+			with self.condition:
+				self.frame = self.buffer.getvalue()
+				self.condition.notify_all()
+
+			self.buffer.seek(0)
+
+		return self.buffer.write(buf);
+
 if __name__ == '__main__':
 	GPIO.setmode(GPIO.BOARD)
 	GPIO.setup(11, GPIO.OUT)
@@ -91,5 +123,42 @@ if __name__ == '__main__':
 	pwm1 = GPIO.PWM(33, 1000)
 	pwm0.start(70)
 	pwm1.start(70)
+
+	output = StreamingOutput()
+	sio.register_namespace(ControllerNameSpace('/controller'))
+	sio.register_namespace(CameraNameSpace('/camera'))
+
+	with picamera.PiCamera() as camera:
+	  camera.resolution = (640, 480)
+	  camera.framerate = 10
+
+	  start = time.time()
+	  stream = io.BytesIO()
+	  try:
+	    for foo in camera.capture_continuous(output, 'jpeg'):
+	      stream.seek(0)
+
+	      if time.time() - start > 30:
+	          break
+	      # Reset the stream for the next capture
+	      stream.seek(0)
+	      stream.truncate()
+	  except Exception as e:
+	  	print('camera fail')
+	  	print(e)
+
+	# 
+	# with picamera.PiCamera(resolution='640x480', framerate=10) as camera:
+	# 	output = StreamingOutput()
+	# 	
+
+	# 	start = time.time()
+	# 	camera.start_recording(output, format='mjpeg')
+
+	# 	#stop recording after 30 seconds
+	# 	if time.time() - start > 30:
+	# 		camera.stop_recording()
+
+
 
 	
