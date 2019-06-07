@@ -1,6 +1,6 @@
 $(function(){
 	console.log('running');
-	var socket = io('http://192.168.2.13:27372/controller', {
+	var socket = io('http://192.168.2.11:27372/controller', {
 		transports: ['websocket']
 	});
 

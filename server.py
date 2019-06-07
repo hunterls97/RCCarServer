@@ -1,5 +1,11 @@
 import os
 import io
+import cv2
+import time
+import queue
+import threading
+import numpy as np
+from PIL import Image
 from flask import Flask
 from flask import send_from_directory
 from flask_socketio import SocketIO, Namespace, emit
@@ -24,13 +30,56 @@ def serve_in_path(path):
 
 	return send_from_directory(static_dir, path)
 
+class ImageProcessor(threading.Thread):
+	def __init__(self, owner):
+		super(ImageProcessor, self).__init__()
+		self.owner = owner
+		self.terminate = False
+		self.isRendering = False
+		self.frameQueue = queue.Queue(5)
+		self.frame = io.BytesIO()
+		self.start()
+
+	def load_queue(self, data):
+		if(self.frameQueue.full()):
+			self.frameQueue.get()
+
+		self.frameQueue.put(data)
+
+	def run(self):
+		while not self.terminate:
+			try:
+				self.frame.write(self.frameQueue.get(timeout=1))
+			except queue.Empty:
+				pass
+			else:
+				if not self.isRendering:
+					self.isRendering = True
+					self.frame.seek(0)
+
+					img = cv2.imdecode(np.asarray(bytearray(self.frame.read()), np.uint8), 1)
+
+					self.frame.seek(0)
+					self.frame.truncate()
+
+					cv2.imshow('img', img)
+					cv2.waitKey(1)
+					self.isRendering = False
+
+
 class CameraNameSpace(Namespace):
+	def __init__(self, namespace):
+		self.namespace = namespace
+		self.imagePool = []
+
 	def on_connect(self):
 		print('rpi camera connected')
+		self.imagePool.append(ImageProcessor(self))
 		pass
-
+		
 	def on_camera_data(self, data):
-		print(data)
+		if(data):
+			self.imagePool[0].load_queue(data) #temporary while only 1 camera, when more cameras then load queue for rc car that sent data
 
 class ControllerNameSpace(Namespace):
 	def on_connect(self):
@@ -71,5 +120,7 @@ class ControllerNameSpace(Namespace):
 
 socketio.on_namespace(ControllerNameSpace('/controller'))
 socketio.on_namespace(CameraNameSpace('/camera'))
+
 if __name__ == "__main__":
-	socketio.run(app, log_output=False, host='192.168.2.13', port=27372)
+	print('Starting Server')
+	socketio.run(app, log_output=False, host='192.168.2.11', port=27372)

@@ -10,7 +10,7 @@ sio = socketio.Client(
 	reconnection_attempts = 10,
 	reconnection_delay = 6
 )
-sio.connect('http://192.168.2.13:27372', namespaces=['/controller', '/camera'])
+sio.connect('http://192.168.2.11:27372', transports=['websocket'], namespaces=['/controller', '/camera'])
 
 def stop():
 	GPIO.output(11, GPIO.LOW)
@@ -91,6 +91,7 @@ class CameraNameSpace(socketio.ClientNamespace):
 				frame = output.frame
 
 			self.emit('camera_data', frame)
+			sio.sleep(0.125) #match camera frame rate
 
 class StreamingOutput(object):
 	def __init__(self):
@@ -130,35 +131,10 @@ if __name__ == '__main__':
 
 	with picamera.PiCamera() as camera:
 	  camera.resolution = (640, 480)
-	  camera.framerate = 10
+	  camera.framerate = 8
 
 	  start = time.time()
-	  stream = io.BytesIO()
-	  try:
-	    for foo in camera.capture_continuous(output, 'jpeg'):
-	      stream.seek(0)
+	  camera.start_recording(output, format='mjpeg', quality=10)
 
-	      if time.time() - start > 30:
-	          break
-	      # Reset the stream for the next capture
-	      stream.seek(0)
-	      stream.truncate()
-	  except Exception as e:
-	  	print('camera fail')
-	  	print(e)
-
-	# 
-	# with picamera.PiCamera(resolution='640x480', framerate=10) as camera:
-	# 	output = StreamingOutput()
-	# 	
-
-	# 	start = time.time()
-	# 	camera.start_recording(output, format='mjpeg')
-
-	# 	#stop recording after 30 seconds
-	# 	if time.time() - start > 30:
-	# 		camera.stop_recording()
-
-
-
-	
+	  while True:
+	  	camera.wait_recording(1)
