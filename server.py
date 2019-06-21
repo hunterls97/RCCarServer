@@ -4,6 +4,7 @@ import cv2
 import time
 import queue
 import threading
+import socketio as sio
 import numpy as np
 from PIL import Image
 from flask import Flask
@@ -74,12 +75,12 @@ class CameraNameSpace(Namespace):
 
 	def on_connect(self):
 		print('rpi camera connected')
-		self.imagePool.append(ImageProcessor(self))
+		#self.imagePool.append(ImageProcessor(self))
 		pass
 		
-	def on_camera_data(self, data):
-		if(data):
-			self.imagePool[0].load_queue(data) #temporary while only 1 camera, when more cameras then load queue for rc car that sent data
+	#def on_camera_data(self, data):
+		#if(data):
+			#self.imagePool[0].load_queue(data) #temporary while only 1 camera, when more cameras then load queue for rc car that sent data
 
 class ControllerNameSpace(Namespace):
 	def on_connect(self):
@@ -116,7 +117,49 @@ class ControllerNameSpace(Namespace):
 		emit('r0', broadcast=True)
 
 	def on_tr0(self):
-		emit('tr0', broadcast=True)
+		emit('tr0', broadcast=True)		
+
+class SimulinkConnector():
+	def __init__(self, host, port):
+		self.host = host
+		self.port = port
+
+		self.sio = sio.Client(
+			reconnection = True,
+			reconnection_attempts = 10,
+			reconnection_delay = 6
+		)
+
+		@self.sio.on('connect')
+		def on_connect():
+			print('connected to simulink')
+
+			#on connect, set drive power to half and begin acceleration
+			emit('dp', {
+				'val': 0.5
+			})
+
+			emit('a1')
+
+		@self.sio.on('data')
+		def on_data(sid, data):
+			d = []
+			if(data):
+				while 1:
+					try:
+						d.append(struct.unpack_from("<Q", data)[0])
+					except struct.error:
+						print(d)
+						break
+
+				#send turn command
+				if(d[0] == 1):
+					emit('tl1')
+				elif(d[0] == 0):
+					emit('tl0')
+
+	def connect(self):
+		self.sio.connect('https://' + str(host) + ':' + str(port))
 
 socketio.on_namespace(ControllerNameSpace('/controller'))
 socketio.on_namespace(CameraNameSpace('/camera'))

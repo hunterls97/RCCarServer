@@ -1,4 +1,5 @@
 import io
+import sys
 import time
 import threading
 import picamera
@@ -112,6 +113,12 @@ class StreamingOutput(object):
 		return self.buffer.write(buf);
 
 if __name__ == '__main__':
+	cameraMode = True
+
+	if len(sys.argv) > 1:
+		if int(sys.argv[1]) == 0:
+			cameraMode = False
+
 	GPIO.setmode(GPIO.BOARD)
 	GPIO.setup(11, GPIO.OUT)
 	GPIO.setup(12, GPIO.OUT)
@@ -127,14 +134,15 @@ if __name__ == '__main__':
 
 	output = StreamingOutput()
 	sio.register_namespace(ControllerNameSpace('/controller'))
-	sio.register_namespace(CameraNameSpace('/camera'))
 
-	with picamera.PiCamera() as camera:
-	  camera.resolution = (640, 480)
-	  camera.framerate = 8
+	if cameraMode:
+		sio.register_namespace(CameraNameSpace('/camera'))
+		with picamera.PiCamera() as camera:
+		  camera.resolution = (640, 480)
+		  camera.framerate = 8
 
-	  start = time.time()
-	  camera.start_recording(output, format='mjpeg', quality=10)
+		  start = time.time()
+		  camera.start_recording(output, format='mjpeg', quality=10)
 
-	  while True:
-	  	camera.wait_recording(1)
+		  while True:
+		  	camera.wait_recording(1)
