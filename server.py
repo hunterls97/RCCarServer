@@ -119,48 +119,80 @@ class ControllerNameSpace(Namespace):
 	def on_tr0(self):
 		emit('tr0', broadcast=True)		
 
-class SimulinkConnector():
+class SimulinkConnector(threading.Thread):
 	def __init__(self, host, port):
 		self.host = host
 		self.port = port
 
-		self.sio = sio.Client(
-			reconnection = True,
-			reconnection_attempts = 10,
-			reconnection_delay = 6
-		)
+		threading.Thread.__init__(self)
+		self.daemon = True
+		self.start()
 
-		@self.sio.on('connect')
-		def on_connect():
-			print('connected to simulink')
+	#need t do it with python socket instead of socketio because of socketio bug
+	def run(self):
+		import socket
+		import struct
 
-			#on connect, set drive power to half and begin acceleration
-			emit('dp', {
-				'val': 0.5
-			})
+		sock = socket.create_connection((self.host, self.port))
 
-			emit('a1')
+		#works
+		while True:
+			data = sock.recv(16)
 
-		@self.sio.on('data')
-		def on_data(sid, data):
-			d = []
-			if(data):
-				while 1:
+			if data:
+				while True:
 					try:
-						d.append(struct.unpack_from("<Q", data)[0])
+						c = int(struct.unpack_from("<d", data)[0])
+						print(c)
+
+						if(c == 1):
+							emit('tr1', broadcast=True)
+						elif(c == 0):
+							emit('tll', broadcast=True)
+						else:
+							emit('tl0', broadcast=True) #tl0 is same as tr0
+
 					except struct.error:
-						print(d)
 						break
 
-				#send turn command
-				if(d[0] == 1):
-					emit('tl1')
-				elif(d[0] == 0):
-					emit('tl0')
+			time.sleep(2) #same clock as server
 
-	def connect(self):
-		self.sio.connect('https://' + str(host) + ':' + str(port))
+		# self.sioc = sio.Client(
+		# 	reconnection = True,
+		# 	reconnection_attempts = 10,
+		# 	reconnection_delay = 6
+		# )
 
+		# @self.sioc.on("connect")
+		# def on_connect(self):
+		# 	print('connected to simulink')
+
+		# 	#on connect, set drive power to half and begin acceleration
+		# 	emit('dp', {
+		# 		'val': 0.5
+		# 	})
+
+		# 	emit('a1')
+
+		# @self.sioc.on("data")
+		# def on_data(self, sid, data):
+		# 	d = []
+		# 	if(data):
+		# 		print(data)
+		# 		while 1:
+		# 			try:
+		# 				d.append(struct.unpack_from("<Q", data)[0])
+		# 			except struct.error:
+		# 				print(d)
+		# 				break
+
+		# 		#send turn command
+		# 		if(d[0] == 1):
+		# 			emit('tl1')
+		# 		elif(d[0] == 0):
+		# 			emit('tl0')
+
+sc = SimulinkConnector("192.168.2.4", 18000)
 socketio.on_namespace(ControllerNameSpace('/controller'))
 socketio.on_namespace(CameraNameSpace('/camera'))
 
