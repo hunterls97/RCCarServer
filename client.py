@@ -28,7 +28,6 @@ def turn(f):
 		GPIO.output(13, GPIO.HIGH if f == 1 else GPIO.LOW)
 
 def accel(f):
-	print('accelerating')
 	if f == -1:
 		GPIO.output(16, GPIO.LOW)
 		GPIO.output(18, GPIO.LOW)
@@ -49,16 +48,13 @@ class ControllerNameSpace(socketio.ClientNamespace):
 
 	#global control commands
 	def on_sp(self, data):
-		print(data.get('val'))
 		setPWM0(float(data.get('val', 1)))
 		
 
 	def on_dp(self, data):
-		print(data.get('val'))
 		setPWM1(float(data.get('val', 1)))
 
 	def on_a1(self, data):
-		print('accel')
 		accel(1)
 
 	def on_tl1(self, data):
@@ -113,11 +109,11 @@ class StreamingOutput(object):
 		return self.buffer.write(buf);
 
 if __name__ == '__main__':
-	cameraMode = True
+	cameraMode = False
 
 	if len(sys.argv) > 1:
-		if int(sys.argv[1]) == 0:
-			cameraMode = False
+		if int(sys.argv[1]) == 1:
+			cameraMode = True
 
 	GPIO.setmode(GPIO.BOARD)
 	GPIO.setup(11, GPIO.OUT)
@@ -129,8 +125,8 @@ if __name__ == '__main__':
 
 	pwm0 = GPIO.PWM(12, 1000)
 	pwm1 = GPIO.PWM(33, 1000)
-	pwm0.start(70)
-	pwm1.start(70)
+	pwm0.start(20)
+	pwm1.start(20)
 
 	output = StreamingOutput()
 	sio.register_namespace(ControllerNameSpace('/controller'))
