@@ -13,8 +13,9 @@ from flask import Flask
 from flask import send_from_directory
 from flask_socketio import SocketIO, Namespace, emit
 
-eventlet.monkey_patch()
+eventlet.monkey_patch() #idk if this is even needed anymore lol
 
+#setup server stuff
 s = sio.Server(async_mode="threading")
 app = Flask(__name__)
 app.wsgi_app = sio.Middleware(s, app.wsgi_app)
@@ -22,6 +23,7 @@ app.wsgi_app = sio.Middleware(s, app.wsgi_app)
 socketio = SocketIO(app, async_mode="eventlet")
 static_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'public')
 
+#setup server routes, mostly for html contoller (for manual car control in emergency case)
 @app.route('/')
 def serve():
 	return send_from_directory(static_dir, 'index.html')
@@ -38,6 +40,7 @@ def serve_in_path(path):
 
 	return send_from_directory(static_dir, path)
 
+#simple image processing class, each car w/ camera runs on separate thread
 class ImageProcessor(threading.Thread):
 	def __init__(self, owner):
 		super(ImageProcessor, self).__init__()
@@ -75,7 +78,7 @@ class ImageProcessor(threading.Thread):
 					cv2.waitKey(1)
 					self.isRendering = False
 
-
+#namespace for the camera, creates an image pool for all the cars with cameras 
 class CameraNameSpace(Namespace):
 	def __init__(self, namespace):
 		self.namespace = namespace
@@ -86,11 +89,13 @@ class CameraNameSpace(Namespace):
 			print('rpi camera connected')
 			self.imagePool.append(ImageProcessor(self))
 			pass
-		
+	
+	#load camera queue, only really need between 8-10 fps
 	def on_camera_data(self, data):
 		if(args.camera and data):
 			self.imagePool[0].load_queue(data) #temporary while only 1 camera, when more cameras then load queue for rc car that sent data
 
+#namespace for all control messages (manual or from simulink etc)
 class ControllerNameSpace(threading.Thread, Namespace):
 	def __init__(self, namespace):
 		super(ControllerNameSpace, self).__init__()
@@ -101,34 +106,26 @@ class ControllerNameSpace(threading.Thread, Namespace):
 		self.buff = bytearray(8)
 		self.command = io.BytesIO()
 		
+		#when simulink is running, need to process on two threads because of too many dumb issues with matlab,
+		#essentially all incoming commands are processed and loaded in the run function, and then the commands
+		#are broadcasted to the working cars in the executor function
 		if(args.simulink):
 			print("establishing simulink connection")
 			self.executor = threading.Thread(target=self.execute)
 			self.start()
 			self.executor.start()
-		#threading.Thread.__init__(self)
-		#self.daemon = True
 
-	def tr1(self):
-		socketio.emit('tr1', broadcast=True, namespace='/controller')
-
-	def tl1(self):
-		socketio.emit('tll', broadcast=True, namespace='/controller')
-
-	def tl0(self):
-		socketio.emit('tl0', broadcast=True, namespace='/controller') #tl0 is same as tr0
-
-	#need t do it with python socket instead of socketio because of socketio bug
+	#need to do it with python socket instead of socketio because of bug
 	def run(self):
 		with app.test_request_context():
 			import socket
 			import struct
 
+			#create socket and connect to optitrack system
 			sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 			sock.connect(("192.168.2.4", 18000))
-			#sock = socket.create_connection(("192.168.2.4", 18000))
 
-			#works
+			#get commands and load them into a queue, if queue is full then just pop first entry
 			while not self.terminate:
 				self.command.write(sock.recv(8))
 				self.command.seek(0)
@@ -136,12 +133,14 @@ class ControllerNameSpace(threading.Thread, Namespace):
 				if(self.commandQueue.full()):
 					self.commandQueue.get()
 
+				#matlab/quanser only sends little endian encoded doubles, but it also doesn't tell you that... fml
 				c = int(struct.unpack_from("<d", bytearray(self.command.read()))[0])
 				self.commandQueue.put(c)
 
 				self.command.seek(0)
 				self.command.truncate()
 
+	#broadcast commands
 	def execute(self):
 		while not self.terminate:
 			c = self.commandQueue.get(timeout=1)
@@ -150,15 +149,12 @@ class ControllerNameSpace(threading.Thread, Namespace):
 
 			if(c == int(1)):
 				socketio.emit('tr1', broadcast=True, namespace='/controller')
-				#self.tr1()
 
 			if(c == int(0)):
 				socketio.emit('tl1', broadcast=True, namespace='/controller')
-				#self.tl1()
 				
 			if(c == int(-1)):
 				socketio.emit('tr0', broadcast=True, namespace='/controller')
-				#self.tl0()
 
 			time.sleep(0.02)
 
@@ -166,7 +162,6 @@ class ControllerNameSpace(threading.Thread, Namespace):
 		print('connected!')
 
 		if(not self.simukinkConnection):
-			#sc = SimulinkConnector("192.168.2.4", 18000)
 			self.simukinkConnection = True
 			socketio.start_background_task(target=self.run)
 
@@ -184,7 +179,6 @@ class ControllerNameSpace(threading.Thread, Namespace):
 
 	def on_tl1(self):
 		emit('tl1', broadcast=True)
-		#emit('tl1', broadcast=True)
 
 	def on_r1(self):
 		emit('r1', broadcast=True)
@@ -205,6 +199,8 @@ class ControllerNameSpace(threading.Thread, Namespace):
 		emit('tr0', broadcast=True)		
 
 if __name__ == "__main__":
+	#parser to determine wheteher or not to listen to car cameras or simulink model
+	#typically one, the other, but not both
 	parser = argparse.ArgumentParser(description="Server Arguments")
 	parser.add_argument('--c', dest='camera', help='enable camera mode', action='store_true')
 	parser.add_argument('--sc', dest='simulink', help='enable simulink connection', action='store_true')
@@ -217,16 +213,5 @@ if __name__ == "__main__":
 	socketio.on_namespace(CameraNameSpace('/camera'))
 
 	print('Starting Server')
-	#eventlet.wsgi.server(eventlet.listen(("192.168.2.11", 27372)), app)
-	#app.run(threaded=True, host='192.168.2.11', port=27372)
 	socketio.run(app, log_output=False, host='192.168.2.11', port=27372)
 
-	# sc.start()
-	# contns.start()
-
-	# try:
-	# 	while True:
-	# 		time.sleep(100)
-	# except (KeyboardInterrupt, SystemExit):
-	# 	sc.join()
-	# 	contns.join()
