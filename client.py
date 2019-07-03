@@ -125,8 +125,11 @@ if __name__ == '__main__':
 
 	pwm0 = GPIO.PWM(12, 1000)
 	pwm1 = GPIO.PWM(33, 1000)
-	pwm0.start(20)
-	pwm1.start(20)
+	pwm0.start(30)
+	pwm1.start(5)
+
+	#start driving
+	accel(1)
 
 	output = StreamingOutput()
 	sio.register_namespace(ControllerNameSpace('/controller'))

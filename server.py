@@ -2,6 +2,8 @@ import os
 import io
 import cv2
 import time
+import argparse
+import eventlet
 import queue
 import threading
 import socketio as sio
@@ -11,8 +13,13 @@ from flask import Flask
 from flask import send_from_directory
 from flask_socketio import SocketIO, Namespace, emit
 
+eventlet.monkey_patch()
+
+s = sio.Server(async_mode="threading")
 app = Flask(__name__)
-socketio = SocketIO(app)
+app.wsgi_app = sio.Middleware(s, app.wsgi_app)
+
+socketio = SocketIO(app, async_mode="eventlet")
 static_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'public')
 
 @app.route('/')
@@ -58,6 +65,7 @@ class ImageProcessor(threading.Thread):
 					self.isRendering = True
 					self.frame.seek(0)
 
+					#img processing will be here
 					img = cv2.imdecode(np.asarray(bytearray(self.frame.read()), np.uint8), 1)
 
 					self.frame.seek(0)
@@ -74,17 +82,94 @@ class CameraNameSpace(Namespace):
 		self.imagePool = []
 
 	def on_connect(self):
-		print('rpi camera connected')
-		#self.imagePool.append(ImageProcessor(self))
-		pass
+		if(args.camera):
+			print('rpi camera connected')
+			self.imagePool.append(ImageProcessor(self))
+			pass
 		
-	#def on_camera_data(self, data):
-		#if(data):
-			#self.imagePool[0].load_queue(data) #temporary while only 1 camera, when more cameras then load queue for rc car that sent data
+	def on_camera_data(self, data):
+		if(args.camera and data):
+			self.imagePool[0].load_queue(data) #temporary while only 1 camera, when more cameras then load queue for rc car that sent data
 
-class ControllerNameSpace(Namespace):
+class ControllerNameSpace(threading.Thread, Namespace):
+	def __init__(self, namespace):
+		super(ControllerNameSpace, self).__init__()
+		self.namespace = namespace
+		self.simukinkConnection = False
+		self.terminate = False
+		self.commandQueue = queue.Queue(5)
+		self.buff = bytearray(8)
+		self.command = io.BytesIO()
+		
+		if(args.simulink):
+			print("establishing simulink connection")
+			self.executor = threading.Thread(target=self.execute)
+			self.start()
+			self.executor.start()
+		#threading.Thread.__init__(self)
+		#self.daemon = True
+
+	def tr1(self):
+		socketio.emit('tr1', broadcast=True, namespace='/controller')
+
+	def tl1(self):
+		socketio.emit('tll', broadcast=True, namespace='/controller')
+
+	def tl0(self):
+		socketio.emit('tl0', broadcast=True, namespace='/controller') #tl0 is same as tr0
+
+	#need t do it with python socket instead of socketio because of socketio bug
+	def run(self):
+		with app.test_request_context():
+			import socket
+			import struct
+
+			sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			sock.connect(("192.168.2.4", 18000))
+			#sock = socket.create_connection(("192.168.2.4", 18000))
+
+			#works
+			while not self.terminate:
+				self.command.write(sock.recv(8))
+				self.command.seek(0)
+
+				if(self.commandQueue.full()):
+					self.commandQueue.get()
+
+				c = int(struct.unpack_from("<d", bytearray(self.command.read()))[0])
+				self.commandQueue.put(c)
+
+				self.command.seek(0)
+				self.command.truncate()
+
+	def execute(self):
+		while not self.terminate:
+			c = self.commandQueue.get(timeout=1)
+			if(not c == -1):
+				print(c)
+
+			if(c == int(1)):
+				socketio.emit('tr1', broadcast=True, namespace='/controller')
+				#self.tr1()
+
+			if(c == int(0)):
+				socketio.emit('tl1', broadcast=True, namespace='/controller')
+				#self.tl1()
+				
+			if(c == int(-1)):
+				socketio.emit('tr0', broadcast=True, namespace='/controller')
+				#self.tl0()
+
+			time.sleep(0.02)
+
 	def on_connect(self):
 		print('connected!')
+
+		if(not self.simukinkConnection):
+			#sc = SimulinkConnector("192.168.2.4", 18000)
+			self.simukinkConnection = True
+			socketio.start_background_task(target=self.run)
+
 		pass
 
 	#global control commands
@@ -95,11 +180,11 @@ class ControllerNameSpace(Namespace):
 		emit('dp', data, broadcast=True)
 
 	def on_a1(self):
-		print('accel')
 		emit('a1', broadcast=True)
 
 	def on_tl1(self):
 		emit('tl1', broadcast=True)
+		#emit('tl1', broadcast=True)
 
 	def on_r1(self):
 		emit('r1', broadcast=True)
@@ -119,83 +204,29 @@ class ControllerNameSpace(Namespace):
 	def on_tr0(self):
 		emit('tr0', broadcast=True)		
 
-class SimulinkConnector(threading.Thread):
-	def __init__(self, host, port):
-		self.host = host
-		self.port = port
-
-		threading.Thread.__init__(self)
-		self.daemon = True
-		self.start()
-
-	#need t do it with python socket instead of socketio because of socketio bug
-	def run(self):
-		import socket
-		import struct
-
-		sock = socket.create_connection((self.host, self.port))
-
-		#works
-		while True:
-			data = sock.recv(16)
-
-			if data:
-				while True:
-					try:
-						c = int(struct.unpack_from("<d", data)[0])
-						print(c)
-
-						if(c == 1):
-							emit('tr1', broadcast=True)
-						elif(c == 0):
-							emit('tll', broadcast=True)
-						else:
-							emit('tl0', broadcast=True) #tl0 is same as tr0
-
-					except struct.error:
-						break
-
-			time.sleep(2) #same clock as server
-
-		# self.sioc = sio.Client(
-		# 	reconnection = True,
-		# 	reconnection_attempts = 10,
-		# 	reconnection_delay = 6
-		# )
-
-		# @self.sioc.on("connect")
-		# def on_connect(self):
-		# 	print('connected to simulink')
-
-		# 	#on connect, set drive power to half and begin acceleration
-		# 	emit('dp', {
-		# 		'val': 0.5
-		# 	})
-
-		# 	emit('a1')
-
-		# @self.sioc.on("data")
-		# def on_data(self, sid, data):
-		# 	d = []
-		# 	if(data):
-		# 		print(data)
-		# 		while 1:
-		# 			try:
-		# 				d.append(struct.unpack_from("<Q", data)[0])
-		# 			except struct.error:
-		# 				print(d)
-		# 				break
-
-		# 		#send turn command
-		# 		if(d[0] == 1):
-		# 			emit('tl1')
-		# 		elif(d[0] == 0):
-		# 			emit('tl0')
-
-sc = SimulinkConnector("192.168.2.4", 18000)
-socketio.on_namespace(ControllerNameSpace('/controller'))
-socketio.on_namespace(CameraNameSpace('/camera'))
-
 if __name__ == "__main__":
+	parser = argparse.ArgumentParser(description="Server Arguments")
+	parser.add_argument('--c', dest='camera', help='enable camera mode', action='store_true')
+	parser.add_argument('--sc', dest='simulink', help='enable simulink connection', action='store_true')
+	parser.set_defaults(camera=False)
+	parser.set_defaults(simulink=False)
+
+	args = parser.parse_args()
+
+	socketio.on_namespace(ControllerNameSpace('/controller'))
+	socketio.on_namespace(CameraNameSpace('/camera'))
+
 	print('Starting Server')
+	#eventlet.wsgi.server(eventlet.listen(("192.168.2.11", 27372)), app)
+	#app.run(threaded=True, host='192.168.2.11', port=27372)
 	socketio.run(app, log_output=False, host='192.168.2.11', port=27372)
+
+	# sc.start()
+	# contns.start()
+
+	# try:
+	# 	while True:
+	# 		time.sleep(100)
+	# except (KeyboardInterrupt, SystemExit):
+	# 	sc.join()
+	# 	contns.join()
