@@ -9,9 +9,9 @@ import threading
 import socketio as sio
 import numpy as np
 from PIL import Image
-from flask import Flask
+from flask import Flask, request
 from flask import send_from_directory
-from flask_socketio import SocketIO, Namespace, emit
+from flask_socketio import SocketIO, Namespace, emit, rooms
 
 eventlet.monkey_patch() #idk if this is even needed anymore lol
 
@@ -58,25 +58,26 @@ class ImageProcessor(threading.Thread):
 		self.frameQueue.put(data)
 
 	def run(self):
-		while not self.terminate:
+		while not self.isRendering:
+			self.isRendering = True
+
 			try:
 				self.frame.write(self.frameQueue.get(timeout=1))
 			except queue.Empty:
 				pass
 			else:
-				if not self.isRendering:
-					self.isRendering = True
-					self.frame.seek(0)
+				self.frame.seek(0)
 
-					#img processing will be here
-					img = cv2.imdecode(np.asarray(bytearray(self.frame.read()), np.uint8), 1)
+				#img processing will be here
+				img = cv2.imdecode(np.asarray(bytearray(self.frame.read()), np.uint8), 1)
 
-					self.frame.seek(0)
-					self.frame.truncate()
+				self.frame.seek(0)
+				self.frame.truncate()
 
-					cv2.imshow('img', img)
-					cv2.waitKey(1)
-					self.isRendering = False
+				cv2.imshow('img', img)
+				cv2.waitKey(1)
+				
+			self.isRendering = False
 
 #namespace for the camera, creates an image pool for all the cars with cameras 
 class CameraNameSpace(Namespace):
@@ -97,6 +98,52 @@ class CameraNameSpace(Namespace):
 
 #namespace for all control messages (manual or from simulink etc)
 class ControllerNameSpace(threading.Thread, Namespace):
+	class ClientController(threading.Thread):
+		def __init__(self, sid):
+			super(ControllerNameSpace.ClientController, self).__init__()
+			self.sid = sid;
+			self.terminate = False
+			self.command = io.BytesIO()
+			self.commandQueue = queue.Queue(5)
+			#self.start()
+
+		#load command into queue
+		def load_queue(self, data):
+			self.command.write(data)
+			self.command.seek(0)
+
+			if(self.commandQueue.full()):
+				self.commandQueue.get()
+
+			#matlab/quanser only sends little endian encoded doubles, but it also doesn't tell you that... fml
+			c = int(struct.unpack_from("<d", bytearray(self.command.read()))[0])
+			self.commandQueue.put(c)
+
+			self.command.seek(0)
+			self.command.truncate()
+
+		#broadcast commands
+		def run(self):
+			while not self.terminate:
+				try:
+					c = self.commandQueue.get(timeout=1)
+				except queue.Empty:
+					c = None
+
+				if(not c == -1):
+					print(str(self.sid) + ': ' + str(c))
+
+				if(c == int(1)):
+					socketio.emit('tr1', room=self.sid)
+
+				if(c == int(0)):
+					socketio.emit('tl1', room=self.sid)
+					
+				if(c == int(-1)):
+					socketio.emit('tr0', room=self.sid)
+
+				time.sleep(0.02)
+
 	def __init__(self, namespace):
 		super(ControllerNameSpace, self).__init__()
 		self.namespace = namespace
@@ -105,17 +152,29 @@ class ControllerNameSpace(threading.Thread, Namespace):
 		self.commandQueue = queue.Queue(5)
 		self.buff = bytearray(8)
 		self.command = io.BytesIO()
+		self.nCars = args.nCars; #number of cars being controlled
+
+		#socket id's of each client
+		self.clients = {
+			'51': None,
+			'52': None,
+			'53': None,
+			'54': None,
+			'55': None
+		}
 		
 		#when simulink is running, need to process on two threads because of too many dumb issues with matlab,
 		#essentially all incoming commands are processed and loaded in the run function, and then the commands
 		#are broadcasted to the working cars in the executor function
 		if(args.simulink):
 			print("establishing simulink connection")
-			self.executor = threading.Thread(target=self.execute)
+			#self.executor = threading.Thread(target=self.execute)
 			self.start()
-			self.executor.start()
+			#self.executor.start()
 
 	#need to do it with python socket instead of socketio because of bug
+	#this is probably slow because I am dumb and tired and I will think of
+	#a better way to do this when I have some coffee
 	def run(self):
 		with app.test_request_context():
 			import socket
@@ -127,45 +186,30 @@ class ControllerNameSpace(threading.Thread, Namespace):
 
 			#get commands and load them into a queue, if queue is full then just pop first entry
 			while not self.terminate:
-				self.command.write(sock.recv(8))
-				self.command.seek(0)
+				#split streamed data into car commands depending on how many cars are connected
+				#the order of commands is from lowest to highest car ip i.e. if 3 cars are connected
+				#at ip's ending in 51, 52, and 53 but commands is only of length 2, then only cars 51
+				#and 52 will get command signals.
 
-				if(self.commandQueue.full()):
-					self.commandQueue.get()
+				data = sock.recv(self.nCars*8)
+				commands = {'5'+str(k+1):list([data[i:i+8] for i in range(0, len(data), 8)])[k] for k in range(0, self.nCars)} #format commands into per car dictionary
 
-				#matlab/quanser only sends little endian encoded doubles, but it also doesn't tell you that... fml
-				c = int(struct.unpack_from("<d", bytearray(self.command.read()))[0])
-				self.commandQueue.put(c)
-
-				self.command.seek(0)
-				self.command.truncate()
-
-	#broadcast commands
-	def execute(self):
-		while not self.terminate:
-			c = self.commandQueue.get(timeout=1)
-			if(not c == -1):
-				print(c)
-
-			if(c == int(1)):
-				socketio.emit('tr1', broadcast=True, namespace='/controller')
-
-			if(c == int(0)):
-				socketio.emit('tl1', broadcast=True, namespace='/controller')
-				
-			if(c == int(-1)):
-				socketio.emit('tr0', broadcast=True, namespace='/controller')
-
-			time.sleep(0.02)
+				#push commands to appropriate queue
+				for car in commands:
+					if self.clients.get(car):
+						self.clients.get(car).load_queue(commands.get(car))
 
 	def on_connect(self):
 		print('connected!')
+		
+		#get the car id from the static ip and associate it with the socket id
+		cid = request.remote_addr.split('.')[3]
 
-		if(not self.simukinkConnection):
-			self.simukinkConnection = True
-			socketio.start_background_task(target=self.run)
+		self.clients[cid] = ControllerNameSpace.ClientController(request.sid)
 
-		pass
+		#if(not self.simukinkConnection):
+		#	self.simukinkConnection = True
+		#	socketio.start_background_task(target=self.run)
 
 	#global control commands
 	def on_sp(self, data):
@@ -204,8 +248,10 @@ if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description="Server Arguments")
 	parser.add_argument('--c', dest='camera', help='enable camera mode', action='store_true')
 	parser.add_argument('--sc', dest='simulink', help='enable simulink connection', action='store_true')
+	parser.add_argument('-ncars', type=int, dest='nCars', help='number of cars being controlled')
 	parser.set_defaults(camera=False)
 	parser.set_defaults(simulink=False)
+	parser.set_defaults(nCars=1)
 
 	args = parser.parse_args()
 

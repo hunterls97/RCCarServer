@@ -2,6 +2,8 @@ import io
 import sys
 import time
 import threading
+import signal
+import argparse
 import picamera
 import socketio
 import RPi.GPIO as GPIO
@@ -18,9 +20,9 @@ sio.connect('http://192.168.2.11:27372', transports=['websocket'], namespaces=['
 def turn_signal(signal, dur=3):
 	#identify ground and live pins, depending on left or right turn
 	if(signal == 'R'):
-		g,l = (22, 24)
+		l,g = (21, 23)
 	else:
-		g,l = (21, 23)
+		l,g = (22, 24)
 
 	GPIO.output(g, GPIO.LOW)
 	t = time.time()
@@ -28,9 +30,9 @@ def turn_signal(signal, dur=3):
 	#loop for duration passed
 	while time.time() - t < dur:
 		GPIO.output(l, GPIO.HIGH)
-		time.sleep(0.5)
+		time.sleep(0.4)
 		GPIO.output(l, GPIO.LOW)
-		time.sleep(0.5)
+		time.sleep(0.4)
 
 #stop all car actions
 def stop():
@@ -89,10 +91,11 @@ class ControllerNameSpace(socketio.ClientNamespace):
 	def on_tl1(self, data):
 		turn(0)
 
-		#only light turn isgnal when not already active
-		if(not self.isTurningR):
+		#only for testing, turning the wheels to go around a curve isn't
+		#the same as turning the wheels to change lanes or make a turn
+		if(not self.isTurning):
 			self.isTurning = True
-			right_turn_signal("L")
+			turn_signal("L")
 			self.isTurning = False
 
 	def on_r1(self, data):
@@ -101,10 +104,11 @@ class ControllerNameSpace(socketio.ClientNamespace):
 	def on_tr1(self, data):
 		turn(1)
 
-		#only light turn isgnal when not already active
-		if(not self.isTurningR):
+		#only for testing, turning the wheels to go around a curve isn't
+		#the same as turning the wheels to change lanes or make a turn
+		if(not self.isTurning):
 			self.isTurning = True
-			right_turn_signal("R")
+			turn_signal("R")
 			self.isTurning = False
 			
 
@@ -124,15 +128,16 @@ class ControllerNameSpace(socketio.ClientNamespace):
 class CameraNameSpace(socketio.ClientNamespace):
 	def on_connect(self):
 		print('connected to pi camera')
-		
-		#load camera frame and send to server
-		while True:
-			with output.condition:
-				output.condition.wait()
-				frame = output.frame
 
-			self.emit('camera_data', frame)
-			sio.sleep(0.125) #match camera frame rate
+		if args.camera:
+			#load camera frame and send to server
+			while True:
+				with output.condition:
+					output.condition.wait()
+					frame = output.frame
+
+				self.emit('camera_data', frame)
+				sio.sleep(0.125) #match camera frame rate
 
 #simple class to handle the camera stream
 class StreamingOutput(object):
@@ -153,13 +158,21 @@ class StreamingOutput(object):
 
 		return self.buffer.write(buf);
 
+def exit(sig, frame):
+	print("shutting down")
+	sio.disconnect()
+	GPIO.cleanup()  
+	sys.exit(0)
+
 if __name__ == '__main__':
 	#identify wheter or not to use camera
-	cameraMode = False
+	parser = argparse.ArgumentParser(description="Server Arguments")
+	parser.add_argument('--c', dest='camera', help='enable camera mode', action='store_true')
+	parser.set_defaults(camera=False)
 
-	if len(sys.argv) > 1:
-		if int(sys.argv[1]) == 1:
-			cameraMode = True
+	args = parser.parse_args()
+
+	signal.signal(signal.SIGINT, exit)
 
 	#setup gpio pins
 	GPIO.setmode(GPIO.BOARD)
@@ -187,12 +200,12 @@ if __name__ == '__main__':
 
 	output = StreamingOutput()
 	sio.register_namespace(ControllerNameSpace('/controller'))
+	sio.register_namespace(CameraNameSpace('/camera'))
 
 	#setup camera
-	if cameraMode:
-		sio.register_namespace(CameraNameSpace('/camera'))
+	if args.camera:
 		with picamera.PiCamera() as camera:
-		  camera.resolution = (640, 480)
+		  camera.resolution = (720, 480)
 		  camera.framerate = 8
 
 		  start = time.time()
