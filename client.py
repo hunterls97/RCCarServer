@@ -16,8 +16,21 @@ sio = socketio.Client(
 )
 sio.connect('http://192.168.2.11:27372', transports=['websocket'], namespaces=['/controller', '/camera'])
 
+#define pwms
+pwm0_val = None
+pwm1_val = None
+
+#sequence parse for advanced mauevers such as insideOvertake
+#pass a list of tuples to the sequence parser, sequence = (fn, kwargs, delay)
+def sequenceParser(sequence: tuple):
+	while sequence:
+		fn, kwargs, delay = sequence.pop(0)
+		fn(**kwargs)
+		time.sleep(delay)
+
+
 #light the turn signal when turning for a certain duration
-def turn_signal(signal, dur=3):
+def turnSignal(signal, dur=3):
 	#identify ground and live pins, depending on left or right turn
 	if(signal == 'R'):
 		l,g = (21, 23)
@@ -41,6 +54,32 @@ def stop():
 	GPIO.output(16, GPIO.LOW)
 	GPIO.output(18, GPIO.LOW)
 
+def emergencyBrake():
+	t = time.time()
+
+	while time.time() - t < (pwm1_val/2):
+		GPIO.output(16, GPIO.HIGH)
+		GPIO.output(18, GPIO.LOW)
+		time.sleep(pwm1_val/2)
+
+	stop()
+
+#requires constant velocity
+def insideOvertake():
+	sequenceParser([
+		(turn, {'f': 0}, 0.4), #left
+		(turn, {'f': -1}, 0.3), #straight
+		(turn, {'f': 1}, 0.4), #right
+		(turn, {'f': -1}, 0.5), #straight
+		(turn, {'f': 1}, 0.4), #right
+		(turn, {'f': -1}, 0.3), #straight
+		(turn, {'f': 0}, 0.4), #left
+		(turn, {'f': -1}, 0.1), #straight, end with 0.1 since no need to do anything else
+	])
+
+	GPIO.output(11, GPIO.LOW)
+	GPIO.output(13, GPIO.LOW)
+
 #turn left right or stop turning
 def turn(f):
 	if f == -1:
@@ -61,10 +100,12 @@ def accel(f):
 
 #change power to steering motor (i.e. change yaw angle)
 def setPWM0(p):
+	pwm0_val = p
 	pwm0.ChangeDutyCycle(p * 100)
 
 #change power to drive motor (i.e. change max velocity)
 def setPWM1(p):
+	pwm1_val = p
 	pwm1.ChangeDutyCycle(p * 100)
 
 #namespace for control inputs
@@ -72,6 +113,7 @@ class ControllerNameSpace(socketio.ClientNamespace):
 	def __init__(self, namespace):
 		self.namespace = namespace
 		self.isTurning = False
+		self.isStopping = False
 
 	def on_connect(self):
 		print('connected to controller')
@@ -85,6 +127,13 @@ class ControllerNameSpace(socketio.ClientNamespace):
 	def on_dp(self, data):
 		setPWM1(float(data.get('val', 1)))
 
+	def on_s1(self, data):
+		if(not self.isStopping):
+			self.isStopping = True
+			insideOvertake()
+			self.isStopping = False
+			#emergencyBrake()
+
 	def on_a1(self, data):
 		accel(1)
 
@@ -95,7 +144,7 @@ class ControllerNameSpace(socketio.ClientNamespace):
 		#the same as turning the wheels to change lanes or make a turn
 		if(not self.isTurning):
 			self.isTurning = True
-			turn_signal("L")
+			turnSignal("L")
 			self.isTurning = False
 
 	def on_r1(self, data):
@@ -108,7 +157,7 @@ class ControllerNameSpace(socketio.ClientNamespace):
 		#the same as turning the wheels to change lanes or make a turn
 		if(not self.isTurning):
 			self.isTurning = True
-			turn_signal("R")
+			turnSignal("R")
 			self.isTurning = False
 			
 
@@ -158,6 +207,7 @@ class StreamingOutput(object):
 
 		return self.buffer.write(buf);
 
+#shutdown properly
 def exit(sig, frame):
 	print("shutting down")
 	sio.disconnect()
@@ -194,6 +244,9 @@ if __name__ == '__main__':
 	#set the duty cycle of the pwm in %
 	pwm0.start(30)
 	pwm1.start(5)
+
+	pwm0_val = 0.30
+	pwm1_val = 0.01
 
 	#start driving
 	#accel(1)

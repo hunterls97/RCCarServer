@@ -5,9 +5,12 @@ import time
 import argparse
 import eventlet
 import queue
+import struct
 import threading
 import socketio as sio
 import numpy as np
+
+from heapq import *
 from PIL import Image
 from flask import Flask, request
 from flask import send_from_directory
@@ -104,43 +107,81 @@ class ControllerNameSpace(threading.Thread, Namespace):
 			self.sid = sid;
 			self.terminate = False
 			self.command = io.BytesIO()
-			self.commandQueue = queue.Queue(5)
-			#self.start()
+			self.priority = io.BytesIO()
+			self.cq = queue.Queue(5)
+			self.commandQueue = [] #queue.Queue(5)
+			self.start()
+
+		# def load_queue(self, data, priority=3):
+		# 	self.command.write(data)
+		# 	self.command.seek(0)
+
+		# 	if(self.cq.full()):
+		# 		self.cq.get()
+
+		# 	c = int(struct.unpack_from("<d", bytearray(self.command.read()))[0])
+		# 	self.cq.put(c)
+
+		# 	self.command.seek(0)
+		# 	self.command.truncate()
 
 		#load command into queue
-		def load_queue(self, data):
-			self.command.write(data)
-			self.command.seek(0)
+		def load_queue(self, data, priority):
+		 	if(data):
+		 		self.priority.write(priority)
+		 		self.command.write(data)
+		 		self.priority.seek(0)
+		 		self.command.seek(0)
 
-			if(self.commandQueue.full()):
-				self.commandQueue.get()
+		 		if(len(self.commandQueue) > 5):
+		 			self.commandQueue.pop()
 
-			#matlab/quanser only sends little endian encoded doubles, but it also doesn't tell you that... fml
-			c = int(struct.unpack_from("<d", bytearray(self.command.read()))[0])
-			self.commandQueue.put(c)
+		 		#matlab/quanser only sends little endian encoded doubles, but it also doesn't tell you that... fml
+		 		p = int(struct.unpack_from("<d", bytearray(self.priority.read()))[0])
+		 		c = int(struct.unpack_from("<d", bytearray(self.command.read()))[0])
+		 		entry = [p, c]
+		 		heappush(self.commandQueue, entry)
 
-			self.command.seek(0)
-			self.command.truncate()
+		 		self.priority.seek(0)
+		 		self.command.seek(0)
+		 		self.priority.truncate()
+		 		self.command.truncate()
+
+		def pop_queue(self):
+			if self.commandQueue:
+				priority, command = heappop(self.commandQueue)
+				return command
+
+			raise KeyError()
 
 		#broadcast commands
 		def run(self):
 			while not self.terminate:
 				try:
-					c = self.commandQueue.get(timeout=1)
-				except queue.Empty:
+					c = self.pop_queue() #self.cq.get(timeout=1)
+					print(c)
+				except KeyError: #queue.Empty:
 					c = None
 
-				if(not c == -1):
-					print(str(self.sid) + ': ' + str(c))
+				#for debug
+				#if(not c == -1):
+				#	print(str(self.sid) + ': ' + str(c))
 
+				#stop car
+				if(c == int(2)):
+					socketio.emit('s1', room=self.sid, namespace='/controller')
+
+				#turn right
 				if(c == int(1)):
-					socketio.emit('tr1', room=self.sid)
+					socketio.emit('tr1', room=self.sid, namespace='/controller')
 
+				#turn left
 				if(c == int(0)):
-					socketio.emit('tl1', room=self.sid)
-					
+					socketio.emit('tl1', room=self.sid, namespace='/controller')
+				
+				#orient wheels forward
 				if(c == int(-1)):
-					socketio.emit('tr0', room=self.sid)
+					socketio.emit('tr0', room=self.sid, namespace='/controller')
 
 				time.sleep(0.02)
 
@@ -178,7 +219,6 @@ class ControllerNameSpace(threading.Thread, Namespace):
 	def run(self):
 		with app.test_request_context():
 			import socket
-			import struct
 
 			#create socket and connect to optitrack system
 			sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -191,25 +231,30 @@ class ControllerNameSpace(threading.Thread, Namespace):
 				#at ip's ending in 51, 52, and 53 but commands is only of length 2, then only cars 51
 				#and 52 will get command signals.
 
-				data = sock.recv(self.nCars*8)
-				commands = {'5'+str(k+1):list([data[i:i+8] for i in range(0, len(data), 8)])[k] for k in range(0, self.nCars)} #format commands into per car dictionary
+				data = sock.recv(self.nCars*16)
 
-				#push commands to appropriate queue
-				for car in commands:
-					if self.clients.get(car):
-						self.clients.get(car).load_queue(commands.get(car))
+				if(len(data) == self.nCars*16):
+					
+					#commands = {'5'+str(k+1):list([data[i:i+8] for i in range(0, len(data), 8)])[k] for k in range(0, self.nCars)}
+					commands = {'5'+str(k+1):list([tuple((data[i:i+8], data[i+8:i+16])) for i in range(0, len(data), 16)])[k] for k in range(0, self.nCars)} #format commands into per car dictionary
+
+					#push commands to appropriate queue
+					for car in commands:
+						if self.clients.get(car):
+							self.clients.get(car).load_queue(*commands.get(car))
 
 	def on_connect(self):
 		print('connected!')
 		
 		#get the car id from the static ip and associate it with the socket id
 		cid = request.remote_addr.split('.')[3]
+		print(cid)
 
-		self.clients[cid] = ControllerNameSpace.ClientController(request.sid)
+		#id of manuel controller isn't actually a car
+		if(int(cid) != 11):
+			self.clients[cid] = ControllerNameSpace.ClientController(request.sid)
 
-		#if(not self.simukinkConnection):
-		#	self.simukinkConnection = True
-		#	socketio.start_background_task(target=self.run)
+		pass
 
 	#global control commands
 	def on_sp(self, data):
@@ -229,6 +274,9 @@ class ControllerNameSpace(threading.Thread, Namespace):
 
 	def on_tr1(self):
 		emit('tr1', broadcast=True)
+
+	def on_s1(self):
+		emit('s1', broadcast=True)
 
 	def on_a0(self):
 		emit('a0', broadcast=True)

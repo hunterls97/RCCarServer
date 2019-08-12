@@ -53,6 +53,10 @@ $(function(){
 		if(e.which == 68){
 			socket.emit('tr1');
 		}
+		//space
+		if(e.which == 32){
+			socket.emit('s1')
+		}
 	}).keyup((e)=>{
 		//w
 		if(e.which == 87){
