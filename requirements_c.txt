@@ -1,6 +1,6 @@
 certifi==2019.3.9
 chardet==3.0.4
-cryptography==1.7.1
+cryptography==3.2
 idna==2.8
 keyring==10.1
 keyrings.alt==1.3
